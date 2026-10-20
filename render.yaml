@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: transcribeia-reuniones
+    runtime: docker
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: GEMINI_API_KEY
+        sync: false

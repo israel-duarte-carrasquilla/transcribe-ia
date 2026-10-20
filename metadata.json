@@ -1,0 +1,1 @@
+{"name":"TranscribeIA - Transcripción Inteligente de Reuniones","description":"Transcripción automática de reuniones en español con identificación de participantes, resumen ejecutivo, compromisos clave y exportación a PDF, Word, SRT, TXT y CSV.","requestFramePermissions":["microphone"],"majorCapabilities":["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]}
