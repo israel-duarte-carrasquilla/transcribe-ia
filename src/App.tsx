@@ -75,7 +75,7 @@ export default function App() {
 
       setSavedMeetings((prev) => {
         const filtered = prev.filter((m) => m.id !== meeting.id);
-        const updated = [stripped, ...filtered].slice(0, 15);
+        const updated = [stripped, ...filtered].slice(0, 50);
         localStorage.setItem('transcribeia_meetings', JSON.stringify(updated));
         return updated;
       });
@@ -264,6 +264,7 @@ export default function App() {
           <AudioImporter
             onTranscribeSuccess={handleTranscribeSuccess}
             onLoadSample={handleLoadSample}
+            onSaveBatchItem={saveMeetingToStorage}
           />
         ) : (
           <div className="space-y-6">

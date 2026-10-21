@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Bot, Send, User, Sparkles, Loader2, HelpCircle } from 'lucide-react';
 import { MeetingData } from '../types/meeting';
+import { askTranscriptDirect } from '../utils/geminiClient';
 
 interface MeetingChatProps {
   meeting: MeetingData;
@@ -44,22 +45,12 @@ export const MeetingChat: React.FC<MeetingChatProps> = ({ meeting }) => {
         meeting.executiveSummary.objective
       }\nAcuerdos: ${meeting.executiveSummary.decisions.join('; ')}`;
 
-      const res = await fetch('./api/ask-transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: q,
-          transcriptText,
-          summaryContext,
-        }),
+      const answer = await askTranscriptDirect({
+        question: q,
+        transcriptText,
+        summaryContext,
       });
-
-      if (!res.ok) {
-        throw new Error('Error al consultar al asistente');
-      }
-
-      const data = await res.json();
-      setMessages((prev) => [...prev, { role: 'assistant', text: data.answer }]);
+      setMessages((prev) => [...prev, { role: 'assistant', text: answer }]);
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,
