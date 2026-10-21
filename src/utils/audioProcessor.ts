@@ -1,13 +1,23 @@
 /**
- * Utility for handling and compressing audio files for long meetings (up to 2 hours)
+ * Utilidad de procesamiento de audio para transcripción literal (verbatim) de grabaciones extensas
+ * (audiencias judiciales, reuniones, entrevistas de hasta 2 horas o más).
  */
 
-export async function fileToBase64(file: File): Promise<string> {
+export interface AudioChunk {
+  index: number;
+  totalChunks: number;
+  startSeconds: number;
+  endSeconds: number;
+  durationSeconds: number;
+  base64: string;
+  mimeType: string;
+}
+
+export async function fileToBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      // Strip data:audio/xyz;base64, prefix if present
       const base64 = result.includes(',') ? result.split(',')[1] : result;
       resolve(base64);
     };
@@ -17,16 +27,13 @@ export async function fileToBase64(file: File): Promise<string> {
 }
 
 /**
- * Converts an AudioBuffer to a 16-bit Mono WAV Blob
+ * Convierte un rango de muestras de un AudioBuffer mono en un Blob WAV de 16-bit
  */
-function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numOfChan = 1; // mono for speech
-  const length = buffer.length * numOfChan * 2 + 44;
+function samplesToWavBlob(samples: Float32Array, sampleRate: number): Blob {
+  const numOfChan = 1;
+  const length = samples.length * 2 + 44;
   const outBuffer = new ArrayBuffer(length);
   const view = new DataView(outBuffer);
-  const channels: Float32Array[] = [];
-  let sampleRate = buffer.sampleRate;
-  let offset = 0;
   let pos = 0;
 
   function setUint16(data: number) {
@@ -41,114 +48,100 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
 
   // RIFF identifier
   setUint32(0x46464952); // "RIFF"
-  setUint32(length - 8); // file length - 8
+  setUint32(length - 8);
   setUint32(0x45564157); // "WAVE"
 
   // fmt sub-chunk
-  setUint32(0x20746d66); // "fmt " chunk
-  setUint32(16); // subchunk1size (16 for PCM)
+  setUint32(0x20746d66); // "fmt "
+  setUint32(16);
   setUint16(1); // PCM
   setUint16(numOfChan);
   setUint32(sampleRate);
-  setUint32(sampleRate * 2 * numOfChan); // byte rate
-  setUint16(numOfChan * 2); // block align
-  setUint16(16); // bits per sample
+  setUint32(sampleRate * 2 * numOfChan);
+  setUint16(numOfChan * 2);
+  setUint16(16);
 
   // data sub-chunk
-  setUint32(0x61746164); // "data" chunk
+  setUint32(0x61746164); // "data"
   setUint32(length - pos - 4);
 
-  // Mix channels to mono if multi-channel
-  for (let i = 0; i < buffer.numberOfChannels; i++) {
-    channels.push(buffer.getChannelData(i));
-  }
-
-  while (offset < buffer.length) {
-    let sample = 0;
-    for (let i = 0; i < buffer.numberOfChannels; i++) {
-      sample += channels[i][offset];
-    }
-    sample = sample / buffer.numberOfChannels;
-    sample = Math.max(-1, Math.min(1, sample));
-    // 16-bit PCM
-    view.setInt16(pos, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(pos, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     pos += 2;
-    offset++;
   }
 
   return new Blob([outBuffer], { type: 'audio/wav' });
 }
 
 /**
- * Optimizes an uploaded audio or video file:
- * - If already small audio (< 15MB), returns base64 directly
- * - If large video or heavy audio, extracts audio track and downsamples to 16kHz mono WAV
+ * Decodifica el archivo de audio/video y lo divide en bloques de 5 minutos (300s) a 8kHz mono (~4.8 MB por bloque).
+ * Esto permite transcribir palabra por palabra grabaciones de 30 min, 1 hora o 2+ horas sin cortes ni errores 413.
  */
-export async function optimizeAudioForTranscription(
+export async function sliceAudioIntoChunks(
   file: File,
+  chunkDurationSec = 300,
   onProgress?: (message: string) => void
-): Promise<{ base64: string; mimeType: string; duration: number }> {
-  const isVideo = file.type.startsWith('video/') || /\.(mp4|mkv|mov|avi|webm)$/i.test(file.name);
-  const isLarge = file.size > 15 * 1024 * 1024; // > 15MB
+): Promise<{ chunks: AudioChunk[]; totalDuration: number }> {
+  onProgress?.('Leyendo pista de audio del archivo...');
+  const arrayBuffer = await file.arrayBuffer();
 
-  if (!isVideo && !isLarge) {
-    onProgress?.('Preparando audio para el análisis...');
-    const base64 = await fileToBase64(file);
-    return {
-      base64,
-      mimeType: file.type || 'audio/mp3',
-      duration: 0,
-    };
-  }
+  onProgress?.('Decodificando audio completo de la grabación...');
+  const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  const totalDuration = decodedBuffer.duration;
 
-  // Large file or video: extract audio via Web Audio API
-  try {
-    onProgress?.('Extrayendo pista de audio de la reunión...');
-    const arrayBuffer = await file.arrayBuffer();
-    
-    onProgress?.('Decodificando ondas sonoras (puede tomar unos segundos para grabaciones de 2 horas)...');
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-    const durationSec = decodedBuffer.duration;
+  // Remuestrear a 8000 Hz mono (calidad óptima de voz humana, 4.8 MB cada 5 minutos)
+  const targetSampleRate = 8000;
+  onProgress?.(
+    `Preparando audio (${formatSeconds(totalDuration)}) en bloques para transcripción literal completa...`
+  );
 
-    onProgress?.(`Optimizando frecuencia para reconocimiento de voz (Duración: ${formatSeconds(durationSec)})...`);
+  const offlineCtx = new OfflineAudioContext(
+    1,
+    Math.ceil(totalDuration * targetSampleRate),
+    targetSampleRate
+  );
 
-    // Target 16kHz mono for optimal speech recognition
-    const targetSampleRate = 16000;
-    const offlineCtx = new OfflineAudioContext(
-      1,
-      Math.ceil(durationSec * targetSampleRate),
-      targetSampleRate
-    );
+  const source = offlineCtx.createBufferSource();
+  source.buffer = decodedBuffer;
+  source.connect(offlineCtx.destination);
+  source.start(0);
 
-    const source = offlineCtx.createBufferSource();
-    source.buffer = decodedBuffer;
-    source.connect(offlineCtx.destination);
-    source.start(0);
+  const renderedBuffer = await offlineCtx.startRendering();
+  const channelData = renderedBuffer.getChannelData(0);
 
-    const renderedBuffer = await offlineCtx.startRendering();
-    onProgress?.('Generando flujo de audio comprimido...');
-    const wavBlob = audioBufferToWav(renderedBuffer);
+  const samplesPerChunk = chunkDurationSec * targetSampleRate;
+  const totalChunks = Math.ceil(channelData.length / samplesPerChunk);
+  const chunks: AudioChunk[] = [];
 
-    // Convert blob to base64
-    const wavFile = new File([wavBlob], 'audio_optimizado.wav', { type: 'audio/wav' });
-    const base64 = await fileToBase64(wavFile);
+  for (let i = 0; i < totalChunks; i++) {
+    const startSample = i * samplesPerChunk;
+    const endSample = Math.min(startSample + samplesPerChunk, channelData.length);
+    const sliceSamples = channelData.subarray(startSample, endSample);
 
-    return {
+    const startSeconds = Math.floor(startSample / targetSampleRate);
+    const endSeconds = Math.floor(endSample / targetSampleRate);
+
+    const wavBlob = samplesToWavBlob(sliceSamples, targetSampleRate);
+    const base64 = await fileToBase64(wavBlob);
+
+    chunks.push({
+      index: i,
+      totalChunks,
+      startSeconds,
+      endSeconds,
+      durationSeconds: endSeconds - startSeconds,
       base64,
       mimeType: 'audio/wav',
-      duration: durationSec,
-    };
-  } catch (err) {
-    console.warn('Fallo en optimización con AudioContext, usando archivo original:', err);
-    onProgress?.('Enviando archivo directamente...');
-    const base64 = await fileToBase64(file);
-    return {
-      base64,
-      mimeType: file.type || 'audio/mp3',
-      duration: 0,
-    };
+    });
   }
+
+  try {
+    await audioCtx.close();
+  } catch (e) {}
+
+  return { chunks, totalDuration };
 }
 
 export function formatSeconds(totalSeconds: number): string {
@@ -165,7 +158,8 @@ export function formatSeconds(totalSeconds: number): string {
 }
 
 export function parseTimestampToSeconds(ts: string): number {
-  const parts = ts.split(':').map((p) => parseInt(p, 10) || 0);
+  const clean = ts.replace(/[^\d:]/g, '');
+  const parts = clean.split(':').map((p) => parseInt(p, 10) || 0);
   if (parts.length === 3) {
     return parts[0] * 3600 + parts[1] * 60 + parts[2];
   } else if (parts.length === 2) {

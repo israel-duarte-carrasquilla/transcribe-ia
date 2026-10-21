@@ -1,8 +1,12 @@
 <?php
+@set_time_limit(300);
+@ini_set('memory_limit', '512M');
+@ini_set('max_execution_time', '300');
+
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+header('Access-Control-Allow-Headers: Content-Type, X-Gemini-Key');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -13,109 +17,269 @@ $endpoint = $_GET['endpoint'] ?? '';
 $rawInput = file_get_contents('php://input');
 $body = json_decode($rawInput, true) ?? [];
 
-$uploadsDir = sys_get_temp_dir() . '/transcribeia_uploads';
-if (!is_dir($uploadsDir)) {
-    @mkdir($uploadsDir, 0777, true);
+$keyFile = __DIR__ . '/.gemini_key.txt';
+
+function getApiKey($body) {
+    global $keyFile;
+    if (!empty($body['apiKey']) && strpos(trim($body['apiKey']), 'AIza') === 0) {
+        $k = trim($body['apiKey']);
+        @file_put_contents($keyFile, $k);
+        return $k;
+    }
+    if (!empty($_SERVER['HTTP_X_GEMINI_KEY']) && strpos(trim($_SERVER['HTTP_X_GEMINI_KEY']), 'AIza') === 0) {
+        $k = trim($_SERVER['HTTP_X_GEMINI_KEY']);
+        @file_put_contents($keyFile, $k);
+        return $k;
+    }
+    if (file_exists($keyFile)) {
+        $saved = trim(@file_get_contents($keyFile));
+        if (strpos($saved, 'AIza') === 0) {
+            return $saved;
+        }
+    }
+    $envKey = getenv('GEMINI_API_KEY') ?: '';
+    if (strpos($envKey, 'AIza') === 0) {
+        return $envKey;
+    }
+    return '';
 }
 
-// Configura aquí tu GEMINI_API_KEY en Spaceship o mediante variable de entorno
-$geminiApiKey = getenv('GEMINI_API_KEY') ?: '';
+function callGemini($apiKey, $payload) {
+    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' . urlencode($apiKey);
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE));
+    curl_setopt($ch, CURLOPT_TIMEOUT, 240);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
 
-function generateFallback($title, $durationSec = 3600, $fileName = '') {
-    $durHours = floor($durationSec / 3600);
-    $durMins = floor(($durationSec % 3600) / 60);
-    $durSecs = floor($durationSec % 60);
-    $formattedDuration = sprintf('%02d:%02d:%02d', $durHours, $durMins, $durSecs);
-    $cleanTitle = $title ?: ($fileName ? pathinfo($fileName, PATHINFO_FILENAME) : 'Reunión de Coordinación y Planificación');
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
 
-    return [
-        'title' => $cleanTitle,
-        'estimatedDuration' => $formattedDuration,
-        'language' => 'Español',
-        'participants' => [
-            ['id' => 'p1', 'name' => 'Director/a del Proyecto', 'role' => 'Moderador / Dirección', 'speakingPercentage' => 35, 'avatarColor' => '#2563eb'],
-            ['id' => 'p2', 'name' => 'Responsable de Operaciones', 'role' => 'Operaciones & Logística', 'speakingPercentage' => 25, 'avatarColor' => '#059669'],
-            ['id' => 'p3', 'name' => 'Líder Técnico', 'role' => 'Arquitectura & Desarrollo', 'speakingPercentage' => 22, 'avatarColor' => '#7c3aed'],
-            ['id' => 'p4', 'name' => 'Responsable de Finanzas', 'role' => 'Presupuesto y Control', 'speakingPercentage' => 18, 'avatarColor' => '#d97706'],
-        ],
-        'executiveSummary' => [
-            'objective' => "Revisión exhaustiva de avances, hitos del cronograma y asignación de recursos para $cleanTitle.",
-            'keyPoints' => [
-                'Se revisó el cumplimiento de los objetivos operativos del período anterior, verificando un balance global positivo.',
-                'Se evaluaron los requerimientos de capacidad y contingencias para las próximas semanas.',
-                'El equipo técnico expuso las optimizaciones necesarias en la infraestructura para asegurar alta disponibilidad.',
-                'Finanzas validó el margen presupuestario asignado con solicitud de auditoría de gastos recurrentes.',
-                'Se acordaron los plazos inamovibles de entrega para las próximas fases.',
-            ],
-            'decisions' => [
-                'Aprobación formal del calendario propuesto para el siguiente ciclo de trabajo.',
-                'Priorización de las mejoras de fiabilidad y refuerzo de procesos de soporte.',
-                'Establecimiento de sesiones de seguimiento quincenales para monitorizar el avance de tareas.',
-            ],
-            'sentiment' => 'Estratégico, colaborativo y orientado a la resolución de contingencias.',
-        ],
-        'actionItems' => [
-            ['id' => 't1', 'task' => 'Consolidar el informe técnico detallado de especificaciones y entregables.', 'assignee' => 'Líder Técnico', 'priority' => 'Alta', 'deadline' => 'Próximo viernes', 'status' => 'pendiente'],
-            ['id' => 't2', 'task' => 'Actualizar las partidas presupuestarias y remitir la conciliación de gastos a dirección.', 'assignee' => 'Responsable de Finanzas', 'priority' => 'Alta', 'deadline' => 'En 7 días', 'status' => 'pendiente'],
-            ['id' => 't3', 'task' => 'Reorganizar la asignación de turnos y recursos del equipo de operaciones.', 'assignee' => 'Responsable de Operaciones', 'priority' => 'Media', 'deadline' => 'Lunes siguiente', 'status' => 'pendiente'],
-            ['id' => 't4', 'task' => 'Enviar acta ejecutiva firmada y convocar a la siguiente sesión de seguimiento.', 'assignee' => 'Director/a del Proyecto', 'priority' => 'Media', 'deadline' => 'En 48 horas', 'status' => 'pendiente'],
-        ],
-        'transcript' => [
-            ['id' => 's1', 'speakerId' => 'p1', 'speakerName' => 'Director/a del Proyecto', 'timestamp' => '00:00:15', 'seconds' => 15, 'text' => "Buenos días a todos. Damos inicio a la sesión de trabajo sobre $cleanTitle. Revisaremos los temas críticos del cronograma, presupuesto y tareas inmediatas.", 'topic' => 'Apertura de la Sesión'],
-            ['id' => 's2', 'speakerId' => 'p2', 'speakerName' => 'Responsable de Operaciones', 'timestamp' => '00:05:40', 'seconds' => 340, 'text' => 'Por parte de operaciones, hemos completado las fases preliminares con un 92% de satisfacción de los usuarios. Sin embargo, requerimos reforzar el equipo para absorber la demanda proyectada.', 'topic' => 'Estado Operativo'],
-            ['id' => 's3', 'speakerId' => 'p3', 'speakerName' => 'Líder Técnico', 'timestamp' => '00:18:25', 'seconds' => 1105, 'text' => 'Desde el área técnica, la arquitectura está respondiendo adecuadamente, pero es imperativo implementar la optimización de servidores antes de la fecha límite para evitar cuellos de botella.', 'topic' => 'Revisión Técnica'],
-            ['id' => 's4', 'speakerId' => 'p4', 'speakerName' => 'Responsable de Finanzas', 'timestamp' => '00:35:10', 'seconds' => 2110, 'text' => 'Los números de cierre muestran que estamos dentro de los márgenes previstos. Si mantenemos el control estricto de los costes variables, podemos financiar la optimización sin desviar el presupuesto.', 'topic' => 'Presupuesto y Control'],
-            ['id' => 's5', 'speakerId' => 'p1', 'speakerName' => 'Director/a del Proyecto', 'timestamp' => '00:52:00', 'seconds' => 3120, 'text' => 'Queda entonces consensuado el plan. Procedemos con la ejecución técnica inmediata y la redistribución de turnos en operaciones. Cerramos la sesión con los compromisos fijados en el acta.', 'topic' => 'Conclusiones y Cierre'],
-        ],
-    ];
-}
-
-if ($endpoint === 'upload-chunk') {
-    $uploadId = preg_replace('/[^a-zA-Z0-9_-]/', '', $body['uploadId'] ?? '');
-    $chunkIndex = $body['chunkIndex'] ?? 0;
-    $totalChunks = $body['totalChunks'] ?? 1;
-    $chunkBase64 = $body['chunkBase64'] ?? '';
-
-    if (!$uploadId || !$chunkBase64) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Parámetros de fragmento incompletos.']);
-        exit;
+    if ($response === false) {
+        throw new Exception('Error de conexión con Gemini: ' . $curlErr);
     }
 
-    $decoded = base64_decode($chunkBase64);
-    $targetFile = $uploadsDir . '/' . $uploadId . '_raw';
-    file_put_contents($targetFile, $decoded, FILE_APPEND);
+    $decoded = json_decode($response, true);
+    if ($httpCode >= 400) {
+        $msg = $decoded['error']['message'] ?? ('Error HTTP ' . $httpCode);
+        throw new Exception('Error de API de Gemini: ' . $msg);
+    }
 
+    $text = $decoded['candidates'][0]['content']['parts'][0]['text'] ?? '';
+    return $text;
+}
+
+function cleanJsonText($rawText) {
+    $cleaned = preg_replace('/^```json\s*/i', '', trim($rawText));
+    $cleaned = preg_replace('/^```\s*/i', '', $cleaned);
+    $cleaned = preg_replace('/\s*```$/', '', $cleaned);
+    return trim($cleaned);
+}
+
+// Endpoint: verificar o guardar clave API
+if ($endpoint === 'check-key') {
+    $key = getApiKey($body);
     echo json_encode([
-        'success' => true,
-        'uploadId' => $uploadId,
-        'chunkIndex' => $chunkIndex,
-        'totalChunks' => $totalChunks,
-        'receivedBytes' => strlen($decoded),
+        'hasKey' => !empty($key),
+        'maskedKey' => !empty($key) ? (substr($key, 0, 8) . '...' . substr($key, -4)) : null,
     ]);
     exit;
 }
 
-if ($endpoint === 'process-uploaded-file' || $endpoint === 'transcribe') {
-    $uploadId = preg_replace('/[^a-zA-Z0-9_-]/', '', $body['uploadId'] ?? '');
-    $meetingTitle = $body['meetingTitle'] ?? '';
-    $fileName = $body['fileName'] ?? '';
-    $rawFile = $uploadsDir . '/' . $uploadId . '_raw';
+if ($endpoint === 'save-key') {
+    $key = trim($body['apiKey'] ?? '');
+    if (strpos($key, 'AIza') !== 0) {
+        http_response_code(400);
+        echo json_encode(['error' => 'La clave de API de Google Gemini debe comenzar con "AIza...". Puedes obtener una gratis en aistudio.google.com/apikey']);
+        exit;
+    }
+    // Probar que la clave sea válida
+    try {
+        callGemini($key, [
+            'contents' => [['parts' => [['text' => 'Responde OK']]]]
+        ]);
+        @file_put_contents($keyFile, $key);
+        echo json_encode(['success' => true, 'maskedKey' => substr($key, 0, 8) . '...' . substr($key, -4)]);
+    } catch (Exception $e) {
+        http_response_code(400);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+    exit;
+}
 
-    if ($uploadId && file_exists($rawFile)) {
-        @unlink($rawFile);
+// Endpoint: transcribir un bloque de audio palabra por palabra (verbatim)
+if ($endpoint === 'transcribe-chunk') {
+    $apiKey = getApiKey($body);
+    if (empty($apiKey)) {
+        http_response_code(401);
+        echo json_encode([
+            'error' => 'Falta configurar tu clave gratuita de Gemini API (AIza...) para transcribir audio real. Haz clic en el botón "Configurar Clave IA" arriba a la derecha.'
+        ]);
+        exit;
     }
 
-    echo json_encode(generateFallback($meetingTitle, 5400, $fileName));
+    $audioBase64 = $body['audioBase64'] ?? '';
+    $mimeType = $body['mimeType'] ?? 'audio/wav';
+    $chunkIndex = intval($body['chunkIndex'] ?? 0);
+    $totalChunks = intval($body['totalChunks'] ?? 1);
+    $startSeconds = intval($body['startSeconds'] ?? 0);
+    $endSeconds = intval($body['endSeconds'] ?? 300);
+    $previousSpeakers = $body['previousSpeakers'] ?? [];
+
+    if (empty($audioBase64)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'No se recibió audio en el bloque.']);
+        exit;
+    }
+
+    $speakersHint = !empty($previousSpeakers)
+        ? "Oradores ya identificados en bloques previos (mantén exactamente los mismos nombres si vuelven a hablar): " . implode(', ', $previousSpeakers) . "."
+        : "Identifica a cada orador por su nombre y rol si se menciona en el audio (por ejemplo: 'Señor Juez (Orador 1)', 'Dra. María Alejandra Betar', 'Don Leonardo Fabián Rojas', 'Valentina', 'Orador 1', 'Orador 2', etc.).";
+
+    $prompt = "Eres un transcriptor forense, judicial y profesional de máxima precisión en español.
+Estás transcribiendo el bloque " . ($chunkIndex + 1) . " de " . $totalChunks . " de una grabación (desde el segundo $startSeconds hasta el segundo $endSeconds).
+$speakersHint
+
+INSTRUCCIONES ESTRICTAS E INQUEBRANTABLES:
+1. Transcribe PALABRA POR PALABRA (verbatim, de manera 100% literal e íntegra) absolutamente TODO lo que se dice en este audio en español.
+2. PROHIBIDO resumir, acortar, parafrasear o inventar textos que no estén en el audio. Si una intervención es larga, transcríbela completa palabra por palabra tal como fue pronunciada.
+3. Incluye datos exactos mencionados: nombres completos, números de radicado, cédulas, direcciones, teléfonos, correos, artículos de ley, fechas y horas.
+4. Para cada intervención o cambio de hablante, indica el segundo relativo dentro de este fragmento (`relativeSeconds`, entre 0 y " . ($endSeconds - $startSeconds) . ").
+
+Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta:
+{
+  \"segments\": [
+    {
+      \"speakerName\": \"Nombre o Rol del Orador\",
+      \"relativeSeconds\": 0,
+      \"text\": \"Transcripción literal palabra por palabra de toda su intervención...\",
+      \"topic\": \"Breve etiqueta del momento (ej. Llamado a lista, Intervención demandado, Auto del despacho)\"
+    }
+  ]
+}";
+
+    try {
+        $rawResponse = callGemini($apiKey, [
+            'contents' => [
+                [
+                    'parts' => [
+                        [
+                            'inlineData' => [
+                                'mimeType' => $mimeType,
+                                'data' => $audioBase64,
+                            ]
+                        ],
+                        ['text' => $prompt]
+                    ]
+                ]
+            ],
+            'generationConfig' => [
+                'temperature' => 0.1,
+                'responseMimeType' => 'application/json',
+            ]
+        ]);
+
+        $cleaned = cleanJsonText($rawResponse);
+        $parsed = json_decode($cleaned, true);
+        if (!is_array($parsed) || !isset($parsed['segments'])) {
+            $parsed = ['segments' => []];
+        }
+        echo json_encode($parsed, JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// Endpoint: generar resumen ejecutivo, participantes y compromisos a partir de la transcripción real completa
+if ($endpoint === 'summarize-transcript') {
+    $apiKey = getApiKey($body);
+    if (empty($apiKey)) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Falta configurar la clave de Gemini API.']);
+        exit;
+    }
+
+    $transcriptText = $body['transcriptText'] ?? '';
+    $meetingTitle = $body['meetingTitle'] ?? 'Grabación Transcrita';
+    $durationFormatted = $body['durationFormatted'] ?? '00:30:00';
+
+    $prompt = "A continuación tienes la transcripción real y literal de una sesión/audiencia/reunión en español titulada preliminarmente \"$meetingTitle\" (Duración: $durationFormatted).
+
+TRANSCRIPCIÓN REAL:
+$transcriptText
+
+Con base EXCLUSIVAMENTE en los hechos reales de esta transcripción (NO inventes nada ajeno al texto; si es una audiencia judicial usa la terminología jurídica exacta del caso, radicado, partes, pretensiones, decisiones del juez, etc.), genera un objeto JSON con:
+1. \"title\": Título formal y descriptivo del caso, audiencia o reunión.
+2. \"participants\": Lista de todos los intervinientes identificados con:
+   - \"id\": \"p1\", \"p2\", etc.
+   - \"name\": Nombre completo o identificador del orador.
+   - \"role\": Rol real en la audiencia o reunión (ej. Juez / Despacho, Apoderada Demandante, Apoderada Demandado, Demandante, Demandado, Secretario/Asistente).
+   - \"speakingPercentage\": Porcentaje estimado de participación (la suma debe ser 100).
+   - \"avatarColor\": Color hexadecimal distinto para cada uno (ej. \"#2563eb\", \"#059669\", \"#7c3aed\", \"#d97706\", \"#dc2626\").
+3. \"executiveSummary\":
+   - \"objective\": Objeto real de la audiencia o reunión (incluyendo radicado, proceso y partes si aplica).
+   - \"keyPoints\": Lista detallada de 5 a 10 puntos clave reales ocurridos en la sesión.
+   - \"decisions\": Lista de decisiones, autos, resoluciones o acuerdos reales adoptados en la sesión.
+   - \"sentiment\": Tono real de la sesión.
+4. \"actionItems\": Lista de actuaciones siguientes, etapas procesales o compromisos pendientes reales derivados de la sesión:
+   - \"id\": \"t1\", \"t2\", etc.
+   - \"task\": Descripción de la actuación o tarea.
+   - \"assignee\": Responsable real.
+   - \"priority\": \"Alta\", \"Media\" o \"Baja\".
+   - \"deadline\": Plazo o momento procesal mencionado.
+   - \"status\": \"pendiente\".";
+
+    try {
+        $rawResponse = callGemini($apiKey, [
+            'contents' => [
+                ['parts' => [['text' => $prompt]]]
+            ],
+            'generationConfig' => [
+                'temperature' => 0.2,
+                'responseMimeType' => 'application/json',
+            ]
+        ]);
+
+        $cleaned = cleanJsonText($rawResponse);
+        $parsed = json_decode($cleaned, true);
+        echo json_encode($parsed ?: new stdClass(), JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
     exit;
 }
 
 if ($endpoint === 'ask-transcript') {
+    $apiKey = getApiKey($body);
+    if (empty($apiKey)) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Configura primero tu clave de Gemini API.']);
+        exit;
+    }
+
     $question = $body['question'] ?? '';
-    echo json_encode([
-        'answer' => "En base al acta de la reunión: La consulta \"$question\" hace referencia a los acuerdos y responsabilidades asignados en la agenda. Puedes revisar el desglose en el panel de Tareas y en la Transcripción completa."
-    ]);
+    $transcriptText = $body['transcriptText'] ?? '';
+    $summaryContext = $body['summaryContext'] ?? '';
+
+    $prompt = "Contexto:\n$summaryContext\n\nTranscripción completa:\n$transcriptText\n\nPregunta del usuario:\n\"$question\"\n\nResponde en español con total fidelidad a la transcripción, citando a los intervinientes y marcas de tiempo.";
+
+    try {
+        $answer = callGemini($apiKey, [
+            'contents' => [['parts' => [['text' => $prompt]]]]
+        ]);
+        echo json_encode(['answer' => $answer], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
+    }
     exit;
 }
 
-echo json_encode(['status' => 'ok', 'service' => 'TranscribeIA API']);
+echo json_encode(['status' => 'ok', 'service' => 'TranscribeIA Verbatim API']);
