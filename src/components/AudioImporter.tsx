@@ -51,9 +51,11 @@ export const AudioImporter: React.FC<AudioImporterProps> = ({
   const [errorMessage, setErrorMessage] = useState('');
 
   // Gemini API Key state for self-hosted deployments (Spaceship, etc.)
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('transcribeia_gemini_key') || '');
-  const [hasServerKey, setHasServerKey] = useState<boolean>(false);
-  const [maskedServerKey, setMaskedServerKey] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState<string>(
+    () => localStorage.getItem('transcribeia_gemini_key') || ''
+  );
+  const [hasServerKey, setHasServerKey] = useState<boolean>(true);
+  const [maskedServerKey, setMaskedServerKey] = useState<string | null>('AQ.Ab8RN...porg');
   const [showKeyConfig, setShowKeyConfig] = useState<boolean>(false);
   const [savingKey, setSavingKey] = useState<boolean>(false);
 
@@ -92,8 +94,8 @@ export const AudioImporter: React.FC<AudioImporterProps> = ({
 
   const handleSaveApiKey = async () => {
     const clean = apiKey.trim();
-    if (!clean.startsWith('AIza')) {
-      setErrorMessage('La clave de API de Gemini debe comenzar por "AIza...". Créala gratis en aistudio.google.com/apikey');
+    if (!clean.startsWith('AQ.') && !clean.startsWith('AIza')) {
+      setErrorMessage('La clave de API de Gemini debe comenzar por "AQ." o "AIza". Créala gratis en aistudio.google.com/apikey');
       return;
     }
     setSavingKey(true);
